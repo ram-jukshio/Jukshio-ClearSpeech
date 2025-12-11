@@ -13,17 +13,17 @@ except ImportError:
 # --- Page Config ---
 st.set_page_config(page_title="ClearSpeech | Jukshio", layout="wide", page_icon="🎙️")
 
-# --- Custom CSS for Polish ---
+# --- Custom CSS ---
 st.markdown("""
     <style>
-    /* Subtle footer */
+    /* Footer Styling */
     .footer {
         position: fixed;
         left: 0;
         bottom: 0;
         width: 100%;
         background-color: #f8f9fa;
-        color: #6c757d;
+        color: ivory;
         text-align: center;
         padding: 10px;
         font-size: 13px;
@@ -33,197 +33,281 @@ st.markdown("""
     .main-content {
         padding-bottom: 80px;
     }
-    /* Metric label styling */
-    [data-testid="stMetricLabel"] {
-        font-size: 0.9rem;
-        color: #666;
+    /* Tab Styling adjustment for better visibility */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 10px;
     }
-    /* Remove extra top padding */
-    .block-container {
-        padding-top: 2rem;
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #40e0d0;
+        border-radius: 4px 4px 0px 0px;
+        gap: 1px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #E34234;
+        color: black;
+        border-bottom: 2px solid #E34234;
     }
     </style>
     """, unsafe_allow_html=True)
 
+# --- Shared Helper Functions ---
+
+def get_audio_details(uploaded_file):
+    """Returns formatted duration string and raw seconds."""
+    duration_str = "Unknown"
+    seconds = 0
+    if MutagenFile and uploaded_file:
+        try:
+            uploaded_file.seek(0)
+            meta = MutagenFile(uploaded_file)
+            if meta is not None and meta.info.length:
+                seconds = meta.info.length
+                mins = int(seconds // 60)
+                sec = int(seconds % 60)
+                duration_str = f"{mins:02d}:{sec:02d}"
+            uploaded_file.seek(0)
+        except Exception:
+            duration_str = "Error"
+    return duration_str, seconds
+
+def render_logs(log_container, log_list):
+    """Updates the log container."""
+    log_container.code("\n".join(log_list), language="bash")
+
+def handle_api_error(resp, log_append_func):
+    """Standardized error handling."""
+    code = resp.status_code
+    text = resp.text[:300]
+    log_append_func(f"ERROR {code}: {text}")
+    
+    if code in [403, 404]:
+        st.error(f"❌ **Connection Error ({code}):** Endpoint unreachable. Contact Developer.")
+    elif code >= 500:
+        st.error(f"⚠️ **Server Error ({code}):** Service unavailable. Try again later.")
+    else:
+        st.error(f"❌ Error: {text}")
+
 # --- Header ---
 st.title("🎙️ Jukshio's ClearSpeech")
 st.markdown("Automated Audio Transcription & Translation Service")
-st.divider()
 
-# --- Main Layout ---
-# We use a container to keep inputs organized together
-with st.container():
-    col_input, col_details = st.columns([1, 1.5], gap="large")
+# --- Tabs ---
+tab_main, tab_transcript, tab_translate = st.tabs([
+    "🚀 Main App (Full Flow)", 
+    "📝 Transcript Only", 
+    "🌎 Translation Only"
+])
 
-    with col_input:
-        st.subheader("Upload Audio")
-        audio_file = st.file_uploader(
-            "Supported formats: WAV, MP3, M4A", 
-            type=['wav', 'mp3', 'm4a'], 
-            label_visibility="visible"
-        )
+# ==========================================
+# TAB 1: MAIN APP (Audio -> Transcript -> Translate)
+# ==========================================
+with tab_main:
+    st.caption("End-to-end processing: Upload audio, get transcript and translation.")
+    
+    with st.container():
+        c_in, c_det = st.columns([1, 1.5], gap="large")
 
-    # --- File Details & Settings (Only visible if file uploaded) ---
-    with col_details:
-        if audio_file:
-            st.subheader("File Details & Settings")
-            
-            # 1. Calculate Duration
-            duration_str = "Unknown"
-            audio_duration_secs = 0
-            
-            if MutagenFile:
-                try:
-                    audio_file.seek(0)
-                    meta = MutagenFile(audio_file)
-                    if meta is not None and meta.info.length:
-                        audio_duration_secs = meta.info.length
-                        mins = int(audio_duration_secs // 60)
-                        secs = int(audio_duration_secs % 60)
-                        duration_str = f"{mins:02d}:{secs:02d}"
-                    audio_file.seek(0)
-                except Exception:
-                    duration_str = "Error reading metadata"
-
-            # 2. Display Metrics cleanly
-            m1, m2 = st.columns(2)
-            m1.metric("File Size", f"{audio_file.size / 1024:.2f} KB")
-            m2.metric("Duration", duration_str)
-
-            # 3. Warning Logic
-            if audio_duration_secs > 300:
-                st.warning("⚠️ **Note:** Audio exceeds 5 minutes. Processing might be slower.")
-
-            # 4. Settings Controls
-            st.markdown("---") # Thin separator
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                source_lang = st.text_input("Source Language", value="hi", help="hi for hindi, en for english, te for telugu, etc.")
-            with c2:
-                # Vertical alignment spacer
-                st.write("") 
-                st.write("")
-                chunking = st.toggle("Smart Chunking", value=True, help="If you want to transcribe the audio in chunks, you can enable this.")
-            with c3:
-                model_choice = st.selectbox(
-                    "Translation Model",
-                    options=["200M SLM (Fast)", "1B Model (Standard)"],
-                    help="200M SLM is the fast model and 1B Model is the standard model."
-                )
-        else:
-            # Placeholder content to keep layout balanced when empty
-            st.info("👈 Please upload a file to configure settings.")
-
-# --- Processing Logic ---
-if audio_file:
-    st.markdown("") # Spacer
-    if st.button("Start Processing🖱️", type="secondary", use_container_width=True, help="Click this button to start the transcription and translation process."):
-        
-        # Determine Model Label early for logs
-        is_fast_model = "200M" in model_choice
-        model_label = "200M SLM" if is_fast_model else "1B Standard"
-        translate_endpoint = "https://los-audio-service-dev.soham.ai/audio/text-translate-200m" if is_fast_model else "https://los-audio-service-dev.soham.ai/audio/text-translate"
-
-        # --- Logs Area ---
-        logs_expander = st.expander("📝 View System Logs", expanded=False)
-        log_placeholder = logs_expander.empty()
-        session_logs = []
-
-        def log(msg):
-            timestamp = time.strftime("%H:%M:%S")
-            session_logs.append(f"[{timestamp}] {msg}")
-            log_placeholder.code("\n".join(session_logs), language="bash")
-
-        def handle_error(resp):
-            code = resp.status_code
-            text = resp.text[:300]
-            log(f"ERROR {code}: {text}")
-            
-            if code in [403, 404]:
-                st.error(f"❌ **Connection Error ({code}):** Endpoint unreachable. Please contact the developer.")
-            elif code >= 500:
-                st.error(f"⚠️ **Server Error ({code}):** Service unavailable. Please try again in 5 minutes.")
-            else:
-                st.error(f"❌ Error: {text}")
-            return False
-
-        # --- Execution ---
-        try:
-            log("Initializing...")
-            
-            # Step 1: Transcribe
-            with st.spinner("Step 1/2: Transcribing Audio..."):
-                url_stt = "https://los-audio-service-dev.soham.ai/audio/transcript"
-                log(f"Sending to STT: {url_stt}")
-                
-                audio_file.seek(0)
-                files = {"audio": (audio_file.name, audio_file.getvalue(), audio_file.type)}
-                payload_stt = {"source_lang": source_lang, "chunking": str(chunking).lower()}
-                
-                resp_stt = requests.post(url_stt, files=files, data=payload_stt)
-                
-                if resp_stt.status_code != 200:
-                    handle_error(resp_stt)
-                    st.stop() # Stop execution on failure
-                
-                data_stt = resp_stt.json()
-                transcript = data_stt.get("transcript", "")
-                process_time = data_stt.get("time_s", 0)
-                log(f"Transcription Complete. Time: {process_time}s")
-
-            # Step 2: Translate
-            with st.spinner(f"Step 2/2: Translating ({model_label})..."):
-                log(f"Sending to Translator: {translate_endpoint}")
-                
-                payload_trans = {"text": transcript}
-                resp_trans = requests.post(translate_endpoint, data=payload_trans)
-                
-                if resp_trans.status_code != 200:
-                    handle_error(resp_trans)
-                    st.stop()
-
-                data_trans = resp_trans.json()
-                translated_text = data_trans.get("translated_text", "")
-                log("Translation Complete.")
-
-            # --- Success UI ---
-            st.divider()
-            st.success("✅ Processing Complete")
-
-            # Dual Pane View
-            col_orig, col_trans = st.columns(2)
-            
-            with col_orig:
-                st.caption("ORIGINAL TRANSCRIPT")
-                st.text_area("Original", transcript, height=300, label_visibility="collapsed")
-            
-            with col_trans:
-                st.caption("ENGLISH TRANSLATION")
-                st.text_area("Translated", translated_text, height=300, label_visibility="collapsed")
-
-            # Download Section
-            report_content = textwrap.dedent(f"""
-                # ClearSpeech Report
-                **File:** {audio_file.name} | **Duration:** {duration_str} | **Model:** {model_label}
-                
-                ## Original Transcript ({source_lang})
-                {transcript}
-                
-                ## English Translation
-                {translated_text}
-            """).strip()
-
-            st.download_button(
-                label="⬇️ Download Report (.md)",
-                data=report_content,
-                file_name=f"Report_{audio_file.name}.md",
-                mime="text/markdown",
-                use_container_width=True
+        with c_in:
+            st.subheader("Upload Audio")
+            main_audio = st.file_uploader(
+                "Supported: WAV, MP3, M4A", 
+                type=['wav', 'mp3', 'm4a'], 
+                key="main_audio_uploader"
             )
 
-        except Exception as e:
-            st.error(f"Critical Error: {str(e)}")
-            log(f"EXCEPTION: {str(e)}")
+        with c_det:
+            if main_audio:
+                st.subheader("Settings")
+                dur_str, dur_sec = get_audio_details(main_audio)
+                
+                m1, m2 = st.columns(2)
+                m1.metric("File Size", f"{main_audio.size/1024:.2f} KB")
+                m2.metric("Duration", dur_str)
+                
+                if dur_sec > 300:
+                    st.warning("⚠️ Audio > 5 mins. May be slow.")
+
+                st.markdown("---")
+                rc1, rc2, rc3 = st.columns(3)
+                main_lang = rc1.text_input("Source Lang", value="hi", key="main_lang")
+                with rc2:
+                    st.write("")
+                    st.write("")
+                    main_chunk = st.toggle("Chunking", value=True, key="main_chunk")
+                with rc3:
+                    main_model = st.selectbox(
+                        "Model", 
+                        ["200M SLM (Fast)", "1B Model (Standard)"],
+                        key="main_model"
+                    )
+            else:
+                st.info("👈 Upload a file to start.")
+
+    if main_audio:
+        st.markdown("")
+        if st.button("🚀 Start Full Process", type="primary", use_container_width=True, key="main_btn"):
+            is_fast = "200M" in main_model
+            url_trans = "https://los-audio-service-dev.soham.ai/audio/text-translate-200m" if is_fast else "https://los-audio-service-dev.soham.ai/audio/text-translate"
+            model_lbl = "200M SLM" if is_fast else "1B Standard"
+
+            logs_exp = st.expander("📝 Logs", expanded=False)
+            log_box = logs_exp.empty()
+            sess_logs = []
+
+            def log_main(msg):
+                sess_logs.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+                render_logs(log_box, sess_logs)
+
+            try:
+                log_main("Initializing...")
+                with st.spinner("Step 1: Transcribing..."):
+                    main_audio.seek(0)
+                    files = {"audio": (main_audio.name, main_audio.getvalue(), main_audio.type)}
+                    payload = {"source_lang": main_lang, "chunking": str(main_chunk).lower()}
+                    
+                    r1 = requests.post("https://los-audio-service-dev.soham.ai/audio/transcript", files=files, data=payload)
+                    
+                    if r1.status_code != 200:
+                        handle_api_error(r1, log_main)
+                        st.stop()
+                    
+                    d1 = r1.json()
+                    transcript = d1.get("transcript", "")
+                    log_main(f"Transcribed. Time: {d1.get('time_s')}s")
+
+                with st.spinner(f"Step 2: Translating ({model_lbl})..."):
+                    r2 = requests.post(url_trans, data={"text": transcript})
+                    if r2.status_code != 200:
+                        handle_api_error(r2, log_main)
+                        st.stop()
+                    
+                    d2 = r2.json()
+                    translated = d2.get("translated_text", "")
+                    log_main("Translation Complete.")
+
+                st.success("✅ Success")
+                
+                col_a, col_b = st.columns(2)
+                col_a.text_area("Original", transcript, height=300, key="main_res_orig")
+                col_b.text_area("Translated", translated, height=300, key="main_res_trans")
+
+                final_md = f"# Report\n**File:** {main_audio.name}\n\n## Original\n{transcript}\n\n## Translation\n{translated}"
+                st.download_button("⬇️ Download Report", final_md, "report.md", key="main_dl")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+# ==========================================
+# TAB 2: TRANSCRIPT ONLY
+# ==========================================
+with tab_transcript:
+    st.caption("Convert Audio to Text (No Translation).")
+    
+    tc1, tc2 = st.columns([1, 1.5])
+    with tc1:
+        trans_audio = st.file_uploader("Upload Audio", type=['wav', 'mp3', 'm4a'], key="trans_audio")
+    
+    with tc2:
+        if trans_audio:
+            dur_str_t, dur_sec_t = get_audio_details(trans_audio)
+            st.metric("Duration", dur_str_t)
+            
+            t_set1, t_set2 = st.columns(2)
+            trans_lang = t_set1.text_input("Source Lang", value="hi", key="trans_lang")
+            trans_chunk = t_set2.toggle("Chunking", value=True, key="trans_chunk")
+            
+            if st.button("📝 Get Transcript", type="primary", key="trans_btn"):
+                log_exp_t = st.expander("Logs", expanded=False)
+                log_box_t = log_exp_t.empty()
+                logs_t = []
+
+                def log_tr(msg):
+                    logs_t.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+                    render_logs(log_box_t, logs_t)
+
+                try:
+                    log_tr("Sending to /audio/transcript...")
+                    with st.spinner("Transcribing..."):
+                        trans_audio.seek(0)
+                        files = {"audio": (trans_audio.name, trans_audio.getvalue(), trans_audio.type)}
+                        payload = {"source_lang": trans_lang, "chunking": str(trans_chunk).lower()}
+                        
+                        r_t = requests.post("https://los-audio-service-dev.soham.ai/audio/transcript", files=files, data=payload)
+                        
+                        if r_t.status_code != 200:
+                            handle_api_error(r_t, log_tr)
+                        else:
+                            d_t = r_t.json()
+                            txt_res = d_t.get("transcript", "")
+                            meta_model = d_t.get("model_used", "N/A")
+                            meta_time = d_t.get("time_s", "N/A")
+                            
+                            log_tr(f"Success. Model: {meta_model}, Time: {meta_time}s")
+                            st.success("✅ Transcript Generated")
+                            
+                            st.text_area("Transcript", txt_res, height=400, key="trans_out")
+                            st.download_button("⬇️ Download .txt", txt_res, "transcript.txt", key="trans_dl")
+
+                except Exception as e:
+                    st.error(f"Error: {e}")
+
+# ==========================================
+# TAB 3: TRANSLATION ONLY
+# ==========================================
+with tab_translate:
+    st.caption("Translate existing text into English.")
+    
+    col_txt, col_cfg = st.columns([2, 1])
+    
+    with col_txt:
+        input_text = st.text_area("Paste Text Here", height=200, placeholder="Enter Hindi text here...", key="tl_input")
+    
+    with col_cfg:
+        st.write("Settings")
+        tl_model = st.selectbox(
+            "Model", 
+            ["200M SLM (Fast)", "1B Model (Standard)"],
+            key="tl_model"
+        )
+        st.info("Target Language: English (Default)")
+    
+    if st.button("🌎 Translate Text", type="primary", key="tl_btn"):
+        if not input_text.strip():
+            st.warning("Please enter some text.")
+        else:
+            is_fast_tl = "200M" in tl_model
+            url_tl = "https://los-audio-service-dev.soham.ai/audio/text-translate-200m" if is_fast_tl else "https://los-audio-service-dev.soham.ai/audio/text-translate"
+            
+            logs_exp_tl = st.expander("Logs", expanded=False)
+            log_box_tl = logs_exp_tl.empty()
+            logs_tl = []
+
+            def log_transl(msg):
+                logs_tl.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+                render_logs(log_box_tl, logs_tl)
+
+            try:
+                log_transl(f"Sending to {url_tl}...")
+                with st.spinner("Translating..."):
+                    r_tl = requests.post(url_tl, data={"text": input_text})
+                    
+                    if r_tl.status_code != 200:
+                        handle_api_error(r_tl, log_transl)
+                    else:
+                        d_tl = r_tl.json()
+                        res_tl = d_tl.get("translated_text", "")
+                        
+                        log_transl("Success.")
+                        st.success("✅ Translation Generated")
+                        
+                        st.text_area("English Output", res_tl, height=200, key="tl_out")
+                        st.download_button("⬇️ Download Text", res_tl, "translation.txt", key="tl_dl")
+            except Exception as e:
+                st.error(f"Error: {e}")
 
 # --- Footer ---
 st.markdown("""
