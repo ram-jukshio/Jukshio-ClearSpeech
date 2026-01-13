@@ -114,8 +114,8 @@ with tab_main:
         with c_in:
             st.subheader("Upload Audio")
             main_audio = st.file_uploader(
-                "Supported: WAV, MP3, M4A", 
-                type=['wav', 'mp3', 'm4a'], 
+                "Supported: WAV, MP3, M4A, MP4, OGG", 
+                type=['wav', 'mp3', 'm4a', 'mp4', 'ogg'], 
                 key="main_audio_uploader"
             )
 
